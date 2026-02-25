@@ -31,12 +31,10 @@ def package_application():
         "--onefile",           # Create a single executable file
         "--windowed",          # Don't show console (for GUI apps)
         f"--name=DocsHelper-{__version__}",   # Name of the executable with version
-        "--add-data=data;data" if os.path.exists("data") else "", # Include data directory if it exists
+        "--icon=128.png",      # Use the 128.png file as the application icon
+        # Note: We intentionally exclude the data directory as it's created at runtime
         main_script
     ]
-    
-    # Remove empty string from command if data directory doesn't exist
-    cmd = [arg for arg in cmd if arg != ""]
     
     print("Starting packaging process...")
     print(f"Command: {' '.join(cmd)}")

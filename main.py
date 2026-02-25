@@ -21,6 +21,23 @@ if getattr(sys, 'frozen', False):
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Fix for transformers logging issue when stdout is not available
+import sys
+_original_stdout = sys.stdout
+
+# Override stdout temporarily during imports if needed
+class DummyStdout:
+    def write(self, txt):
+        pass
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+
+# Temporarily replace stdout if it's not available during initialization
+if not hasattr(sys.stdout, 'isatty'):
+    sys.stdout = DummyStdout()
+
 
 class DocumentProcessor(QObject):
     """Handles document processing and vector database operations"""
@@ -34,7 +51,26 @@ class DocumentProcessor(QObject):
         # Initialize the model with proper environment settings for PyInstaller
         import os
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')  # Lightweight model for embeddings
+        
+        # Handle the stdout issue during model loading
+        import sys
+        original_stdout = sys.stdout
+        if not hasattr(sys.stdout, 'isatty'):
+            class DummyStdout:
+                def write(self, txt):
+                    pass
+                def flush(self):
+                    pass
+                def isatty(self):
+                    return False
+            sys.stdout = DummyStdout()
+        
+        try:
+            self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')  # Lightweight model for embeddings
+        finally:
+            # Restore original stdout after model loading
+            sys.stdout = original_stdout
+        
         self.documents_data = []  # Store document content and metadata
         self.plugin_manager = get_plugin_manager()  # Initialize plugin manager
         
@@ -209,6 +245,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"文档助手 v{__version__}")
         self.setGeometry(100, 100, 1000, 700)
+        
+        # Set application icon
+        self.set_app_icon()
+        
+        # Create data and db directories if they don't exist
+        self.ensure_directories_exist()
         
         # Initialize document processor
         self.processor = DocumentProcessor()
@@ -451,6 +493,28 @@ class MainWindow(QMainWindow):
             os.startfile(file_path)
         else:
             QMessageBox.warning(self, "错误", f"文件未找到: {file_path}")
+    
+    def ensure_directories_exist(self):
+        """Create data and db directories if they don't exist"""
+        data_dir = "data"
+        db_dir = os.path.join(data_dir, "db")
+        
+        # Create data directory if it doesn't exist
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
+        
+        # Create db directory if it doesn't exist
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+    
+    def set_app_icon(self):
+        """Set the application icon from 128.png file"""
+        import os
+        from PySide6.QtGui import QIcon
+        
+        icon_path = "128.png"
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
     
     def check_database_exists(self):
         """Check if vector database exists and update UI accordingly"""
