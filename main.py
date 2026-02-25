@@ -66,7 +66,14 @@ class DocumentProcessor(QObject):
             sys.stdout = DummyStdout()
         
         try:
-            self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')  # Lightweight model for embeddings
+            # Try to load model from local directory first
+            local_model_path = "model/all-MiniLM-L6-v2"
+            if os.path.exists(local_model_path):
+                # Load from local directory
+                self.model = SentenceTransformer(local_model_path, device='cpu')
+            else:
+                # Load from online (this will download and cache for future use)
+                self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
         finally:
             # Restore original stdout after model loading
             sys.stdout = original_stdout
@@ -257,10 +264,20 @@ class MainWindow(QMainWindow):
         self.vector_index = None
         self.db_path = "data/db/document_database.index"
         
+        # Setup basic UI first (without loading database)
+        self.setup_basic_ui()
+        
+        # Load database asynchronously
+        self.load_database_async()
+    
+    def setup_basic_ui(self):
+        """Setup the basic UI elements without loading database"""
         # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        
+
         
         # Directory selection section
         dir_layout = QHBoxLayout()
@@ -274,14 +291,11 @@ class MainWindow(QMainWindow):
         dir_layout.addWidget(self.select_dir_button)
         main_layout.addLayout(dir_layout)
         
-        # Scan button
+        # Scan and query buttons
+        button_layout = QHBoxLayout()
         self.scan_button = QPushButton("扫描文档")
         self.scan_button.clicked.connect(self.start_scan)
-        main_layout.addWidget(self.scan_button)
-        
-        # Progress label
-        self.progress_label = QLabel("准备扫描文档...")
-        main_layout.addWidget(self.progress_label)
+        button_layout.addWidget(self.scan_button)
         
         # Query section
         query_group = QWidget()
@@ -313,6 +327,12 @@ class MainWindow(QMainWindow):
         self.query_button.clicked.connect(self.perform_query)
         query_layout.addWidget(self.query_button)
         
+        main_layout.addLayout(button_layout)  # Add buttons layout first
+        
+        # Progress label for status updates
+        self.progress_label = QLabel("正在初始化...")
+        main_layout.addWidget(self.progress_label)
+        
         main_layout.addWidget(query_group)
         
         # Add separator line between query area and results
@@ -328,11 +348,48 @@ class MainWindow(QMainWindow):
         self.results_list.itemDoubleClicked.connect(self.open_result_file)
         main_layout.addWidget(self.results_list)
         
-        # Check if database exists
-        self.check_database_exists()
-        
         # Worker thread for scanning
         self.scan_worker = None
+    
+    def load_database_async(self):
+        """Load database asynchronously in a separate thread"""
+        # Start database loading in a thread
+        db_thread = threading.Thread(target=self._load_database_in_background)
+        db_thread.daemon = True  # Allow the thread to be terminated when main program exits
+        db_thread.start()
+    
+    def _load_database_in_background(self):
+        """Background method to load the database"""
+        # Check if database exists and load it
+        if os.path.exists(self.db_path):
+            try:
+                self.vector_index = self.processor.load_from_vector_db(self.db_path)
+                # Update UI in the main thread
+                if self.vector_index:
+                    # Use QTimer to call the UI update method in the main thread
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self._update_status_loaded_successfully())
+                else:
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self._update_status_load_failed("数据库文件格式错误"))
+            except Exception as e:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self._update_status_load_failed(f"数据库加载失败: {str(e)}"))
+        else:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._update_status_no_database())
+    
+    def _update_status_loaded_successfully(self):
+        """Update UI status when database loads successfully - called from main thread"""
+        self.progress_label.setText("向量数据库已加载。准备就绪，可以搜索。")
+    
+    def _update_status_load_failed(self, error_msg):
+        """Update UI status when database fails to load - called from main thread"""
+        self.progress_label.setText(error_msg)
+    
+    def _update_status_no_database(self):
+        """Update UI status when no database is found - called from main thread"""
+        self.progress_label.setText("未找到向量数据库。请先扫描文档。")
     
     def select_directory(self):
         """Open dialog to select document directory"""
@@ -495,9 +552,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", f"文件未找到: {file_path}")
     
     def ensure_directories_exist(self):
-        """Create data and db directories if they don't exist"""
+        """Create data, db, and model directories if they don't exist"""
         data_dir = "data"
         db_dir = os.path.join(data_dir, "db")
+        model_dir = "model"
         
         # Create data directory if it doesn't exist
         if not os.path.exists(data_dir):
@@ -506,6 +564,10 @@ class MainWindow(QMainWindow):
         # Create db directory if it doesn't exist
         if not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
+        
+        # Create model directory if it doesn't exist
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir, exist_ok=True)
     
     def set_app_icon(self):
         """Set the application icon from 128.png file"""
@@ -530,7 +592,27 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    
+    # Create and show splash screen
+    from PySide6.QtWidgets import QSplashScreen
+    from PySide6.QtGui import QPixmap
+    import os
+    
+    splash = None
+    if os.path.exists("128.png"):
+        pixmap = QPixmap("128.png")
+        if not pixmap.isNull():
+            splash = QSplashScreen(pixmap)
+            splash.show()
+            app.processEvents()  # Allow the splash screen to be displayed
+    
+    # Create main window
     window = MainWindow()
+    
+    # Hide splash screen when main window is ready
+    if splash:
+        splash.finish(window)
+    
     window.show()
     sys.exit(app.exec())
 
